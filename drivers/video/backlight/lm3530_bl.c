@@ -63,6 +63,7 @@ static int cur_main_lcd_level;
 static int saved_main_lcd_level;
 static int backlight_status = BL_ON;
 static int pwm_status = BL_ON;
+static int brightness_rate = 0x00;
 
 static void lm3530_hw_reset(struct i2c_client *client)
 {
@@ -138,6 +139,7 @@ static void lm3530_backlight_on(struct i2c_client *client, int level)
 		lm3530_hw_reset(client);
 
 		lm3530_write_reg(dev->client, 0xA0, 0x00);
+		lm3530_write_reg(dev->client, 0x30, brightness_rate & 0x3f);
 		lm3530_write_reg(dev->client, 0x10, 
 			(pwm_status == BL_OFF) ? dev->max_current & 0x1F 
                                : dev->max_current );
@@ -318,6 +320,7 @@ static ssize_t lcd_backlight_store_on_off(struct device *dev,
 	return count;
 
 }
+
 static ssize_t lcd_backlight_show_pwm(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -341,12 +344,38 @@ static ssize_t lcd_backlight_store_pwm(struct device *dev,
 	return count;
 }
 
+static ssize_t lcd_backlight_show_brightness_rate(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", brightness_rate & 0x3f);
+}
+
+static ssize_t lcd_backlight_store_brightness_rate(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	if (!count)
+		return -EINVAL;
+
+        brightness_rate = simple_strtoul(buf, NULL, 10);
+	brightness_rate &= 0x3f;
+
+	mutex_lock(&backlight_mtx);
+	lm3530_write_reg(client, 0x30, brightness_rate & 0x3f);
+	mutex_unlock(&backlight_mtx);
+
+	return count;
+}
+
 DEVICE_ATTR(lm3530_level, 0644, lcd_backlight_show_level,
 		lcd_backlight_store_level);
 DEVICE_ATTR(lm3530_backlight_on_off, 0644, lcd_backlight_show_on_off,
 		lcd_backlight_store_on_off);
 DEVICE_ATTR(lm3530_pwm, 0644, lcd_backlight_show_pwm,
 		lcd_backlight_store_pwm);
+DEVICE_ATTR(lm3530_brightness_rate, 0644, lcd_backlight_show_brightness_rate,
+		lcd_backlight_store_brightness_rate);
 
 static struct backlight_ops lm3530_bl_ops = {
 	.update_status = bl_set_intensity,
@@ -423,12 +452,20 @@ static int __devinit lm3530_probe(struct i2c_client *i2c_dev,
 		dev_err(&i2c_dev->dev, "failed to create 3rd sysfs\n");
 		goto err_device_create_file_3;
 	}
+	err = device_create_file(&i2c_dev->dev,
+			&dev_attr_lm3530_brightness_rate);
+	if (err < 0) {
+		dev_err(&i2c_dev->dev, "failed to create 4rd sysfs\n");
+		goto err_device_create_file_4;
+	}
 
 	lm3530_i2c_client = i2c_dev;
 
 	pr_info("lm3530 probed\n");
 	return 0;
 
+err_device_create_file_4:
+	device_remove_file(&i2c_dev->dev, &dev_attr_lm3530_pwm);
 err_device_create_file_3:
 	device_remove_file(&i2c_dev->dev, &dev_attr_lm3530_backlight_on_off);
 err_device_create_file_2:
@@ -451,6 +488,8 @@ static int __devexit lm3530_remove(struct i2c_client *i2c_dev)
 	lm3530_i2c_client = NULL;
 	device_remove_file(&i2c_dev->dev, &dev_attr_lm3530_level);
 	device_remove_file(&i2c_dev->dev, &dev_attr_lm3530_backlight_on_off);
+	device_remove_file(&i2c_dev->dev, &dev_attr_lm3530_pwm);
+	device_remove_file(&i2c_dev->dev, &dev_attr_lm3530_brightness_rate);
 	i2c_set_clientdata(i2c_dev, NULL);
 
 	if (gpio_is_valid(dev->gpio))
